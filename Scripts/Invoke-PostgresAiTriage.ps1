@@ -3,28 +3,28 @@
 # Collects results in JSON format and generates reports
 
 param(
-    [Parameter(Mandatory=$true)]
-    [string]$Host,
-    
-    [Parameter(Mandatory=$true)]
+    [Parameter(Mandatory = $true)]
+    [string]$PgHost,
+
+    [Parameter(Mandatory = $true)]
     [string]$Database,
-    
-    [Parameter(Mandatory=$true)]
+
+    [Parameter(Mandatory = $true)]
     [string]$Username,
-    
-    [Parameter(Mandatory=$false)]
+
+    [Parameter(Mandatory = $false)]
     [string]$Port = "5432",
-    
-    [Parameter(Mandatory=$false)]
+
+    [Parameter(Mandatory = $false)]
     [string]$Password,
-    
-    [Parameter(Mandatory=$false)]
+
+    [Parameter(Mandatory = $false)]
     [string]$ReportPath = "$PSScriptRoot\..\Reports",
-    
-    [Parameter(Mandatory=$false)]
+
+    [Parameter(Mandatory = $false)]
     [string]$LogPath = "$PSScriptRoot\..\Logs",
-    
-    [Parameter(Mandatory=$false)]
+
+    [Parameter(Mandatory = $false)]
     [string]$HistoryPath = "$PSScriptRoot\..\History"
 )
 
@@ -53,10 +53,10 @@ function Write-Log {
 
 # Initialize report
 Write-Log "Starting PostgreSQL AI Triage..."
-Write-Log "Target: $Host`:$Port/$Database"
+Write-Log "Target: $PgHost`:$Port/$Database"
 $results = @{
     Timestamp = Get-Date -o o
-    Host = $Host
+    Host = $PgHost
     Port = $Port
     Database = $Database
     Detectors = @()
@@ -65,7 +65,7 @@ $results = @{
 # Build psql connection string
 $env:PGPASSWORD = if ($Password) { $Password } else { "" }
 $psqlArgs = @(
-    "-h", $Host,
+    "-h", $PgHost,
     "-p", $Port,
     "-U", $Username,
     "-d", $Database,
@@ -78,7 +78,7 @@ $psqlArgs = @(
 $detectorFiles = @(
     "01-TopSlowQueries.sql",
     "02-Blocking.sql",
-    "03-TableBloatVacuumRisk.sql"
+    "03-DeadTupleVacuumRisk.sql"
 )
 
 foreach ($detector in $detectorFiles) {
@@ -129,7 +129,7 @@ $results | ConvertTo-Json -Depth 10 | Out-File -FilePath $ReportFile -Encoding U
 $summary = @"
 PostgreSQL AI Triage Report
 Generated: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')
-Target: $Host`:$Port/$Database
+Target: $PgHost`:$Port/$Database
 
 Detectors Run: $($results.Detectors.Count)
 Successful: $($results.Detectors | Where-Object { $_.Status -eq 'Success' } | Measure-Object).Count

@@ -7,14 +7,15 @@ Automated PostgreSQL health checks and performance diagnostics using AI-driven t
 PostgreSQL AI Triage is an MVP tool that identifies and reports performance issues and configuration risks in PostgreSQL databases. It runs a set of detector queries to analyze:
 
 - **Slow Running Queries**: Queries with high execution time and frequent runs
-- **Blocking Locks**: Active lock contentions that may impact performance  
-- **Table Bloat**: Tables with high dead tuple ratios requiring vacuum attention
+- **Blocking Locks**: Active session blocking detected via pg_blocking_pids()
+- **Dead Tuple & Vacuum Risk**: Tables with high dead tuple ratios requiring vacuum attention
 
 Each detector returns structured JSON output for easy parsing and integration.
 
 ## Features
 
 - ✅ Non-superuser friendly (uses `pg_stat_*` views)
+- ✅ Recommended: `pg_read_all_stats` role for full visibility
 - ✅ JSON output for each detector
 - ✅ Severity scoring (0-10 scale)
 - ✅ Comprehensive logging and reporting
@@ -28,7 +29,7 @@ postgresql-ai-triage/
 ├── Sql/                          # Detector SQL scripts
 │   ├── 01-TopSlowQueries.sql
 │   ├── 02-Blocking.sql
-│   └── 03-TableBloatVacuumRisk.sql
+│   └── 03-DeadTupleVacuumRisk.sql
 ├── Scripts/                      # PowerShell orchestration
 │   └── Invoke-PostgresAiTriage.ps1
 ├── Reports/                      # Full JSON reports (generated)
@@ -43,25 +44,25 @@ postgresql-ai-triage/
 - PowerShell 5.1+
 - `psql` (PostgreSQL client) in PATH
 - Network access to PostgreSQL database
-- Basic SELECT permissions
+- Basic SELECT permissions on system catalogs
 
 ### Recommended
-- PostgreSQL 12+ (for best pg_stat_* coverage)
+- PostgreSQL 13+ (for `pg_blocking_pids()` support)
+- `pg_read_all_stats` role granted for full visibility into other sessions
 - `pg_stat_statements` extension enabled for slow query detection
 
 ### Optional Setup (for superuser)
 ```sql
--- Enable pg_stat_statements if not already enabled
+-- Enable pg_stat_statements
 CREATE EXTENSION IF NOT EXISTS pg_stat_statements;
+
+-- Grant triage user read access to all statistics
+GRANT pg_read_all_stats TO triage_user;
 ```
 
 ## Usage
 
-### Basic Usage
-
-```powershell
-.\Scripts\Invoke-PostgresAiTriage.ps1 `
-  -Host localhost `
+###PgHost localhost `
   -Database mydb `
   -Username postgres `
   -Port 5432
@@ -71,7 +72,7 @@ CREATE EXTENSION IF NOT EXISTS pg_stat_statements;
 
 ```powershell
 .\Scripts\Invoke-PostgresAiTriage.ps1 `
-  -Host localhost `
+  -PgHost localhost `
   -Database mydb `
   -Username postgres `
   -Port 5432 `
@@ -79,6 +80,10 @@ CREATE EXTENSION IF NOT EXISTS pg_stat_statements;
 ```
 
 ### Custom Output Paths
+
+```powershell
+.\Scripts\Invoke-PostgresAiTriage.ps1 `
+  -Pg Custom Output Paths
 
 ```powershell
 .\Scripts\Invoke-PostgresAiTriage.ps1 `
@@ -134,35 +139,56 @@ Timestamped log of all operations for debugging and auditing.
 ### 01-TopSlowQueries.sql
 Identifies slow-running queries using `pg_stat_statements` extension.
 
-**Thresholds:**
-- Queries with mean execution time > 1 second
-- Queries executed > 10 times
+**Output Fields:**
+- `queryid`: Unique query identifier
+- `query`: Query text
+- `calls`: Number of times executed
+- `mean_exec_time_ms`: Average execution time
+- `max_exec_time_ms`: Maximum execution time
+- `rows`: Rows returned
+- `shared_blks_hit`: Shared buffer cache hits
+- `shared_blks_read`: Shared buffer cache misses/reads
+- `temp_blks_written`: Temporary block writes
 
 **Severity Scoring:**
-- 5-9 based on number of slow queries found
+- 0 = No slow queries found
+- 5 = 1-3 slow queries
+- 7 = 4-5 slow queries
+- 9 = 6+ slow queries
 
 **Uses:**
 - `pg_stat_statements`
 
 ### 02-Blocking.sql
-Identifies active lock conflicts using `pg_stat_activity` and `pg_locks`.
+Identifies active blocking scenarios using `pg_blocking_pids()` function to detect waiter/blocker relationships.
 
 **Criteria:**
-- Active blocking locks (locks not yet granted)
-- Current query information and lock types
+- Sessions that are blocked or blocking other sessions
+- Requires PostgreSQL 13+ for `pg_blocking_pids()` function
+
+**Output Fields:**
+- `pid`: Process ID
+- `user`: Database user
+- `query`: Current query (truncated to 200 chars)
+- `state`: Connection state
+- `duration_seconds`: How long the session has been active
+- `role`: Either 'blocked' or 'blocking'
+- `blocked_by_pids`: Array of PIDs causing the block
 
 **Severity Scoring:**
-- 0-10 based on number of blocking situations
-- 10 = 5+ blocking locks
-- 8 = 2-5 blocking locks
-- 6 = 1 blocking lock
+- 0 = No blocking detected
+- 6 = 1 blocking scenario
+- 8 = 2-5 blocking scenarios
+- 10 = 6+ blocking scenarios
 
 **Uses:**
 - `pg_stat_activity`
-- `pg_locks`
+- `pg_blocking_pids()` function
 
-### 03-TableBloatVacuumRisk.sql
+### 03-DeadTupleVacuumRisk.sql
 Identifies tables with high dead tuple ratios and vacuum risk using `pg_stat_user_tables`.
+
+**Note:** This detector identifies *dead tuple accumulation risk*, not true physical disk bloat. It looks at statistics from vacuum/autovacuum operations to flag tables needing maintenance.
 
 **Criteria:**
 - Tables with > 10% dead tuples
@@ -175,16 +201,34 @@ Identifies tables with high dead tuple ratios and vacuum risk using `pg_stat_use
 - **LOW**: Below thresholds
 
 **Severity Scoring:**
-- 10 = Critical issues found
-- 8 = High risk issues
-- 6 = Medium risk issues
-- 3 = Low risk issues
+- 0 = No risk detected
+- 6 = Medium risk stat_user_tables`
+- `SELECT` on `pg_stat_statements` (if extension is enabled)
 
-**Uses:**
-- `pg_stat_user_tables`
+These are typically available to normal database users.
 
-## JSON Output Schema
+### Recommended (Best Full Coverage)
+Grant the `pg_read_all_stats` role to your triage user:
 
+```sql
+GRANT pg_read_all_stats TO triage_user;
+```
+
+This role provides visibility into all session activity and statistics, which is necessary for:
+- Blocking detection to see all active sessions
+- Slow query analysis with complete statistics
+- Table statistics for all user tables
+
+### To Enable Full Functionality
+```sql
+-- Grant access if using restricted user
+GRANT CONNECT ON DATABASE mydb TO app_user;
+GRANT USAGE ON SCHEMA pg_catalog TO app_user;
+
+-- For full statistics visibility (recommended)
+GRANT pg_read_all_stats TO app_user;
+
+-- For pg_stat_statements (optional, requires superuser to instal
 Each detector returns a single JSON object with this structure:
 
 ```json
@@ -198,31 +242,38 @@ Each detector returns a single JSON object with this structure:
 ```
 
 ## Permissions Requirements
+ if the extension is not installed. To enable:
+```sql
+-- As superuser
+CREATE EXTENSION IF NOT EXISTS pg_stat_statements;
+GRANT SELECT ON pg_stat_statements TO triage_user;
+```
 
-### Minimum Required (Non-Superuser)
-- `SELECT` on `pg_stat_activity`
-- `SELECT` on `pg_locks`
-- `SELECT` on `pg_stat_user_tables`
-- `SELECT` on `pg_stat_statements` (if extension is enabled)
+### PostgreSQL Version Too Old
+The `pg_blocking_pids()` function requires PostgreSQL 13+. On older versions, the blocking detector will fail. Consider upgrading or disabling that detector by removing `02-Blocking.sql` from the Scripts directory.
 
-These are typically available to normal database users.
-
-### To Enable Full Functionality
+### Permission Denied Errors
+Verify user has required permissions:
+```sql
+-- As superuser, grant read all stats
+GRANT pg_read_all_stats TO triage
 ```sql
 -- Grant access if using restricted user
 GRANT CONNECT ON DATABASE mydb TO app_user;
 GRANT USAGE ON SCHEMA pg_catalog TO app_user;
+pg_read_all_stats TO triage_user;
 
--- For pg_stat_statements (optional)
+-- Optional: For slow query analysis
 CREATE EXTENSION IF NOT EXISTS pg_stat_statements;
-GRANT SELECT ON pg_stat_statements TO app_user;
+GRANT SELECT ON pg_stat_statements TO triage_user;
 ```
 
-## Troubleshooting
+2. Store connection parameters in secure config file or use environment variables
 
-### psql Command Not Found
-Ensure PostgreSQL client tools are in PATH:
+3. Schedule regular execution using Windows Task Scheduler:
 ```powershell
+# Create a scheduled task
+$action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument '-NoProfile -ExecutionPolicy Bypass -File C:\path\to\Invoke-PostgresAiTriage.ps1 -Pg
 # Windows
 $env:Path += ";C:\Program Files\PostgreSQL\15\bin"
 
