@@ -9,21 +9,21 @@ WITH table_stats AS (
     SELECT
         schemaname,
         relname,
-        live_tup,
-        dead_tup,
+        n_live_tup AS live_tup,
+        n_dead_tup AS dead_tup,
         last_vacuum,
         last_autovacuum,
         n_tup_ins,
         n_tup_upd,
         n_tup_del,
         CASE
-            WHEN (live_tup + dead_tup) > 0
-            THEN ROUND((dead_tup::numeric / (live_tup + dead_tup) * 100), 2)
+            WHEN (n_live_tup + n_dead_tup) > 0
+            THEN ROUND((n_dead_tup::numeric / (n_live_tup + n_dead_tup) * 100), 2)
             ELSE 0
         END AS dead_ratio_percent,
         EXTRACT(EPOCH FROM (CURRENT_TIMESTAMP - COALESCE(last_autovacuum, last_vacuum))) AS seconds_since_vacuum
     FROM pg_stat_user_tables
-    WHERE (live_tup + dead_tup) > 1000  -- Tables with > 1000 tuples
+    WHERE (n_live_tup + n_dead_tup) > 1000  -- Tables with > 1000 tuples
 ),
 vacuum_risk AS (
     SELECT
