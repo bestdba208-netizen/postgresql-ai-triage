@@ -4,50 +4,67 @@
 -- No superuser required; recommended: GRANT pg_read_all_stats TO triage_user;
 -- Requires PostgreSQL 13+ for pg_blocking_pids() function
 
-WITH blocking_info AS (
-    SELECT DISTINCT
-        a.pid,
-        a.usename,
-        a.query,
-        a.state,
-        a.query_start,
-        EXTRACT(EPOCH FROM (CURRENT_TIMESTAMP - a.query_start)) AS query_duration_seconds,
-        CASE
-            WHEN pg_blocking_pids(a.pid)::text != '{}' THEN 'blocked'
-            ELSE 'blocking'
-        END AS role,
-        pg_blocking_pids(a.pid) AS blocked_by_pids
+WITH blocked_sessions AS (
+    SELECT
+        a.pid AS waiter_pid,
+        a.usename AS waiter_user,
+        a.query AS waiter_query,
+        a.state AS waiter_state,
+        a.query_start AS waiter_query_start,
+        EXTRACT(EPOCH FROM (CURRENT_TIMESTAMP - a.query_start)) AS waiter_duration_seconds,
+        pg_blocking_pids(a.pid) AS blocker_pids
     FROM pg_stat_activity a
-    WHERE (
-        pg_blocking_pids(a.pid)::text != '{}'
-        OR a.pid IN (
-            SELECT unnest(pg_blocking_pids(pid))
-            FROM pg_stat_activity
-            WHERE pg_blocking_pids(pid)::text != '{}'
-        )
-    )
-    AND a.pid <> pg_backend_pid()
+    WHERE cardinality(pg_blocking_pids(a.pid)) > 0
+      AND a.pid <> pg_backend_pid()
+),
+waiter_blocker_pairs AS (
+    SELECT
+        waiter_pid,
+        waiter_user,
+        waiter_query,
+        waiter_state,
+        waiter_query_start,
+        waiter_duration_seconds,
+        unnest(blocker_pids) AS blocker_pid
+    FROM blocked_sessions
+),
+blocker_details AS (
+    SELECT
+        wb.waiter_pid,
+        wb.waiter_user,
+        wb.waiter_query,
+        wb.waiter_state,
+        wb.waiter_query_start,
+        wb.waiter_duration_seconds,
+        wb.blocker_pid,
+        pb.usename AS blocker_user,
+        LEFT(pb.query, 200) AS blocker_query,
+        pb.state AS blocker_state
+    FROM waiter_blocker_pairs wb
+    LEFT JOIN pg_stat_activity pb ON pb.pid = wb.blocker_pid
 ),
 blocking_summary AS (
     SELECT
-        COUNT(*) AS blocking_count,
+        COUNT(DISTINCT waiter_pid) AS blocking_count,
         COALESCE(
             json_agg(
                 json_build_object(
-                    'pid', pid,
-                    'user', usename,
-                    'query', LEFT(query, 200),
-                    'state', state,
-                    'query_start', query_start,
-                    'duration_seconds', query_duration_seconds,
-                    'role', role,
-                    'blocked_by_pids', blocked_by_pids
+                    'waiter_pid', waiter_pid,
+                    'waiter_user', waiter_user,
+                    'waiter_query', LEFT(waiter_query, 200),
+                    'waiter_state', waiter_state,
+                    'waiter_query_start', waiter_query_start,
+                    'waiter_duration_seconds', waiter_duration_seconds,
+                    'blocker_pid', blocker_pid,
+                    'blocker_user', blocker_user,
+                    'blocker_query', blocker_query,
+                    'blocker_state', blocker_state
                 )
-                ORDER BY query_duration_seconds DESC
+                ORDER BY waiter_duration_seconds DESC
             ),
             '[]'::json
         ) AS blocking_list
-    FROM blocking_info
+    FROM blocker_details
 )
 SELECT
     json_build_object(
@@ -59,7 +76,7 @@ SELECT
             WHEN blocking_count > 0 THEN 6
             ELSE 0
         END,
-        'Summary', 'Found ' || blocking_count || ' active blocking scenarios',
+        'Summary', 'Found ' || blocking_count || ' active waiting/blocking session relationships',
         'DetailsJson', blocking_list
     ) AS detector_result
 FROM blocking_summary;

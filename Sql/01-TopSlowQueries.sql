@@ -2,7 +2,6 @@
 -- Identifies slow-running queries from pg_stat_statements extension
 -- Returns exactly one JSON object with detector findings
 -- No superuser required if pg_stat_statements is configured
--- Recommended: GRANT pg_read_all_stats TO triage_user;
 
 WITH slow_queries AS (
     SELECT
@@ -17,12 +16,12 @@ WITH slow_queries AS (
         shared_blks_read,
         temp_blks_written
     FROM pg_stat_statements
-    WHERE mean_exec_time > 1000  -- Queries with mean execution time > 1 second
-        AND calls > 10            -- Queries executed more than 10 times
+    WHERE mean_exec_time > 1000
+      AND calls > 10
     ORDER BY mean_exec_time DESC
     LIMIT 10
 ),
-aggregated AS (
+structured AS (
     SELECT
         COUNT(*) AS query_count,
         COALESCE(
@@ -58,4 +57,4 @@ SELECT
         'Summary', 'Found ' || query_count || ' slow-running queries with mean execution time > 1 second',
         'DetailsJson', query_list
     ) AS detector_result
-FROM aggregated;
+FROM structured; 

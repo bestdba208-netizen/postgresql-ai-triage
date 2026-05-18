@@ -83,24 +83,23 @@ $detectorFiles = @(
 
 foreach ($detector in $detectorFiles) {
     $sqlFile = Join-Path $SqlDir $detector
-    
+
     if (-not (Test-Path $sqlFile)) {
         Write-Log "WARNING: Detector file not found: $sqlFile"
         continue
     }
-    
+
     try {
         Write-Log "Running detector: $detector"
-        
+
         $output = & psql @psqlArgs -f $sqlFile 2>&1
-        
+
         if ($LASTEXITCODE -ne 0) {
             Write-Log "ERROR: Detector $detector failed with exit code $LASTEXITCODE"
             Write-Log "Output: $output"
             continue
         }
-        
-        # Parse JSON result
+
         if ($output) {
             $detectorResult = $output | ConvertFrom-Json
             $results.Detectors += @{
@@ -151,7 +150,6 @@ Write-Log "  Full Report: $ReportFile"
 Write-Log "  Summary: $HistoryFile"
 Write-Log "  Log: $LogFile"
 
-# Clear sensitive data
 Remove-Item -Path env:PGPASSWORD -ErrorAction SilentlyContinue
 
 exit $LASTEXITCODE
