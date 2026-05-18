@@ -131,15 +131,15 @@ Generated: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')
 Target: $PgHost`:$Port/$Database
 
 Detectors Run: $($results.Detectors.Count)
-Successful: $($results.Detectors | Where-Object { $_.Status -eq 'Success' } | Measure-Object).Count
-Failed: $($results.Detectors | Where-Object { $_.Status -eq 'Failed' } | Measure-Object).Count
+Successful: $(($results.Detectors | Where-Object { $_.Status -eq 'Success' } | Measure-Object).Count)
+Failed: $(($results.Detectors | Where-Object { $_.Status -eq 'Failed' } | Measure-Object).Count)
 
 Issues Found:
 "@
 
 foreach ($detectorResult in $results.Detectors | Where-Object { $_.Status -eq 'Success' }) {
-    $issueInfo = $detectorResult.Result.detector_result
-    $summary += "`r`n- $($issueInfo.DetectorName): Severity $($issueInfo.SeverityScore) - $($issueInfo.Summary)"
+    $issueInfo = $detectorResult.Result
+    $summary += "`r`n- $($issueInfo.DetectorName) [$($issueInfo.IssueKey)]: Severity $($issueInfo.SeverityScore) - $($issueInfo.Summary)"
 }
 
 Write-Log "Saving summary to: $HistoryFile"
