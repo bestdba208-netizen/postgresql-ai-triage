@@ -62,7 +62,11 @@ GRANT pg_read_all_stats TO triage_user;
 
 ## Usage
 
-###PgHost localhost `
+### Basic Usage
+
+```powershell
+.\Scripts\Invoke-PostgresAiTriage.ps1 `
+  -PgHost localhost `
   -Database mydb `
   -Username postgres `
   -Port 5432
@@ -83,11 +87,7 @@ GRANT pg_read_all_stats TO triage_user;
 
 ```powershell
 .\Scripts\Invoke-PostgresAiTriage.ps1 `
-  -Pg Custom Output Paths
-
-```powershell
-.\Scripts\Invoke-PostgresAiTriage.ps1 `
-  -Host prod-db.example.com `
+  -PgHost prod-db.example.com `
   -Database production `
   -Username app_user `
   -ReportPath "C:\TriageReports" `
@@ -138,6 +138,10 @@ Timestamped log of all operations for debugging and auditing.
 
 ### 01-TopSlowQueries.sql
 Identifies slow-running queries using `pg_stat_statements` extension.
+
+**Thresholds:**
+- Queries with mean execution time > 1 second
+- Queries executed > 10 times
 
 **Output Fields:**
 - `queryid`: Unique query identifier
@@ -202,7 +206,32 @@ Identifies tables with high dead tuple ratios and vacuum risk using `pg_stat_use
 
 **Severity Scoring:**
 - 0 = No risk detected
-- 6 = Medium risk stat_user_tables`
+- 6 = Medium risk found
+- 8 = High risk found
+- 10 = Critical risk found
+
+**Uses:**
+- `pg_stat_user_tables`
+
+## JSON Output Schema
+
+Each detector returns a single JSON object with this structure:
+
+```json
+{
+  "DetectorName": "string - Name of the detector",
+  "IssueKey": "string - Unique identifier (format: PREFIX_YYYYMMDD_HHMM)",
+  "SeverityScore": "0-10 - Severity level",
+  "Summary": "string - Human-readable summary",
+  "DetailsJson": "object or array - Detailed findings"
+}
+```
+
+## Permissions Requirements
+
+### Minimum Required (Non-Superuser)
+- `SELECT` on `pg_stat_activity`
+- `SELECT` on `pg_stat_user_tables`
 - `SELECT` on `pg_stat_statements` (if extension is enabled)
 
 These are typically available to normal database users.
@@ -228,52 +257,16 @@ GRANT USAGE ON SCHEMA pg_catalog TO app_user;
 -- For full statistics visibility (recommended)
 GRANT pg_read_all_stats TO app_user;
 
--- For pg_stat_statements (optional, requires superuser to instal
-Each detector returns a single JSON object with this structure:
-
-```json
-{
-  "DetectorName": "string - Name of the detector",
-  "IssueKey": "string - Unique identifier (format: PREFIX_YYYYMMDD_HHMM)",
-  "SeverityScore": "0-10 - Severity level",
-  "Summary": "string - Human-readable summary",
-  "DetailsJson": "object or array - Detailed findings"
-}
-```
-
-## Permissions Requirements
- if the extension is not installed. To enable:
-```sql
--- As superuser
+-- For pg_stat_statements (optional, requires superuser to install)
 CREATE EXTENSION IF NOT EXISTS pg_stat_statements;
-GRANT SELECT ON pg_stat_statements TO triage_user;
+GRANT SELECT ON pg_stat_statements TO app_user;
 ```
 
-### PostgreSQL Version Too Old
-The `pg_blocking_pids()` function requires PostgreSQL 13+. On older versions, the blocking detector will fail. Consider upgrading or disabling that detector by removing `02-Blocking.sql` from the Scripts directory.
+## Troubleshooting
 
-### Permission Denied Errors
-Verify user has required permissions:
-```sql
--- As superuser, grant read all stats
-GRANT pg_read_all_stats TO triage
-```sql
--- Grant access if using restricted user
-GRANT CONNECT ON DATABASE mydb TO app_user;
-GRANT USAGE ON SCHEMA pg_catalog TO app_user;
-pg_read_all_stats TO triage_user;
-
--- Optional: For slow query analysis
-CREATE EXTENSION IF NOT EXISTS pg_stat_statements;
-GRANT SELECT ON pg_stat_statements TO triage_user;
-```
-
-2. Store connection parameters in secure config file or use environment variables
-
-3. Schedule regular execution using Windows Task Scheduler:
+### psql Command Not Found
+Ensure PostgreSQL client tools are in PATH:
 ```powershell
-# Create a scheduled task
-$action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument '-NoProfile -ExecutionPolicy Bypass -File C:\path\to\Invoke-PostgresAiTriage.ps1 -Pg
 # Windows
 $env:Path += ";C:\Program Files\PostgreSQL\15\bin"
 
@@ -288,16 +281,21 @@ psql -h localhost -p 5432 -U postgres -d mydb -c "SELECT version();"
 ```
 
 ### pg_stat_statements Extension Not Installed
-This detector will skip gracefully. To enable:
-```sql
-CREATE EXTENSION IF NOT EXISTS pg_stat_statements;
-```
-
-### Permission Denied Errors
-Verify user has SELECT permissions on system catalogs:
+This detector will skip gracefully if the extension is not installed. To enable:
 ```sql
 -- As superuser
-GRANT SELECT ON ALL TABLES IN SCHEMA pg_catalog TO app_user;
+CREATE EXTENSION IF NOT EXISTS pg_stat_statements;
+GRANT SELECT ON pg_stat_statements TO triage_user;
+```
+
+### PostgreSQL Version Too Old
+The `pg_blocking_pids()` function requires PostgreSQL 13+. On older versions, the blocking detector will fail. Consider upgrading or disabling that detector by removing `02-Blocking.sql` from the Scripts directory.
+
+### Permission Denied Errors
+Verify user has required permissions:
+```sql
+-- As superuser, grant read all stats
+GRANT pg_read_all_stats TO triage_user;
 ```
 
 ## Configuration for Production Use
@@ -307,9 +305,11 @@ GRANT SELECT ON ALL TABLES IN SCHEMA pg_catalog TO app_user;
 CREATE USER triage_user WITH PASSWORD 'secure_password';
 GRANT CONNECT ON DATABASE production TO triage_user;
 GRANT USAGE ON SCHEMA pg_catalog TO triage_user;
-GRANT SELECT ON pg_stat_activity TO triage_user;
-GRANT SELECT ON pg_locks TO triage_user;
-GRANT SELECT ON pg_stat_user_tables TO triage_user;
+GRANT pg_read_all_stats TO triage_user;
+
+-- Optional: For slow query analysis
+CREATE EXTENSION IF NOT EXISTS pg_stat_statements;
+GRANT SELECT ON pg_stat_statements TO triage_user;
 ```
 
 2. Store connection parameters in secure config file or use environment variables
@@ -317,7 +317,7 @@ GRANT SELECT ON pg_stat_user_tables TO triage_user;
 3. Schedule regular execution using Windows Task Scheduler:
 ```powershell
 # Create a scheduled task
-$action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument '-NoProfile -ExecutionPolicy Bypass -File C:\path\to\Invoke-PostgresAiTriage.ps1 -Host proddb -Database prod -Username triage_user -Port 5432'
+$action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument '-NoProfile -ExecutionPolicy Bypass -File C:\path\to\Invoke-PostgresAiTriage.ps1 -PgHost proddb -Database prod -Username triage_user -Port 5432'
 $trigger = New-ScheduledTaskTrigger -Daily -At 2AM
 Register-ScheduledTask -Action $action -Trigger $trigger -TaskName "PostgreSQL AI Triage"
 ```
